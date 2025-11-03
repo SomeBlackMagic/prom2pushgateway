@@ -63,6 +63,7 @@ COPY --from=build --chmod=0555 /workspace/prom2pushgateway /usr/local/bin/prom2p
 # run as non-root (65532 = nobody in most base images)
 USER 65532:65532
 
-ENTRYPOINT ["/usr/local/bin/prom2pushgateway"]
+CMD ["/usr/local/bin/prom2pushgateway"]
 
-HEALTHCHECK CMD curl -f http://localhost:8081/health || exit 1
+HEALTHCHECK --interval=15s --timeout=5s --start-period=1s --retries=3 \
+  CMD curl -f http://localhost:8081/health || exit 1
