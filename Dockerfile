@@ -66,4 +66,4 @@ USER 65532:65532
 CMD ["/usr/local/bin/prom2pushgateway"]
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=1s --retries=3 \
-  CMD curl -f http://localhost:8081/health || exit 1
+  CMD curl -f http://localhost:8081/healthz || exit 1
