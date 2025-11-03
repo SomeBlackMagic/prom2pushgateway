@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"text/template"
 	"time"
@@ -19,6 +20,8 @@ import (
 
 var version string = "dev"
 var revision string = "000000000000000000000000000000"
+
+var lastSuccess atomic.Value
 
 type customMetric struct {
 	Name  string
@@ -74,6 +77,11 @@ func readMetricsFile(path string) ([]byte, error) {
 	if path == "" {
 		return nil, nil
 	}
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	}
+
 	rendered, err := renderTemplateFile(path)
 	if err != nil {
 		return nil, err
@@ -114,8 +122,14 @@ func main() {
 	go func() {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("ok"))
+			ok, _ := lastSuccess.Load().(bool)
+			if ok {
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("ok"))
+			} else {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte("not ready"))
+			}
 		})
 		srv := &http.Server{Addr: healthAddr, Handler: mux}
 
@@ -143,7 +157,9 @@ func main() {
 		default:
 			customMetrics, err := readMetricsFile(metricsFile)
 			if err != nil {
-				fmt.Println("read metrics file:", err)
+				if !os.IsNotExist(err) {
+					fmt.Println("read metrics file:", err)
+				}
 			}
 			run(client, sourceURL, pushURL, pushUser, pushPass, scrapeTimeout, pushTimeout, customMetrics)
 			select {
