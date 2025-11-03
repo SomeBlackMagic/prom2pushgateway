@@ -26,8 +26,8 @@ COPY . .
 # target parameters for cross-compilation
 ARG TARGETOS
 ARG TARGETARCH
-ARG VERSION
-ARG REVISION
+ARG VERSION="dev"
+ARG REVISION="000000000000000000000000000000"
 
 # build the binary
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -51,6 +51,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # minimal runtime image
 FROM busybox
 
+COPY --from=curlimages/curl:8.7.1 /usr/bin/curl /usr/bin/curl
+
 # copy CA certificates for HTTPS support
 # (taken from the same alpine version)
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
@@ -62,3 +64,5 @@ COPY --from=build --chmod=0555 /workspace/prom2pushgateway /usr/local/bin/prom2p
 USER 65532:65532
 
 ENTRYPOINT ["/usr/local/bin/prom2pushgateway"]
+
+HEALTHCHECK CMD curl -f http://localhost:8081/health || exit 1

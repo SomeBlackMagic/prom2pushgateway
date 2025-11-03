@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -8,9 +9,21 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"strings"
+	"syscall"
+	"text/template"
 	"time"
 )
+
+var version string = "dev"
+var revision string = "000000000000000000000000000000"
+
+type customMetric struct {
+	Name  string
+	Value float64
+}
 
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -28,38 +41,123 @@ func getenvDuration(key string, def time.Duration) time.Duration {
 	return def
 }
 
-func getenvFloat(key string, def float64) float64 {
-	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
+func renderTemplateFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	tmpl, err := template.New("metrics").Parse(string(data))
+	if err != nil {
+		return "", err
+	}
+
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, map[string]interface{}{
+		"Env": envMap(),
+	})
+	return buf.String(), err
+}
+
+func envMap() map[string]string {
+	m := make(map[string]string)
+	for _, e := range os.Environ() {
+		pair := strings.SplitN(e, "=", 2)
+		if len(pair) == 2 {
+			m[pair[0]] = pair[1]
 		}
 	}
-	return def
+	return m
+}
+
+func readMetricsFile(path string) ([]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
+	rendered, err := renderTemplateFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// basic validation / cleanup
+	var buf bytes.Buffer
+	scanner := bufio.NewScanner(strings.NewReader(rendered))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		buf.WriteString(line + "\n")
+	}
+	return buf.Bytes(), nil
 }
 
 func main() {
+	fmt.Printf("Start prom2pushgateway version=%s revision=%s\n", version, revision)
+
 	sourceURL := getenv("SOURCE_URL", "http://app:8080/metrics")
 	pushURL := getenv("PUSHGATEWAY_URL", "http://pushgateway:9091/metrics/job/example")
 	pushUser := getenv("PUSHGATEWAY_USER", "")
 	pushPass := getenv("PUSHGATEWAY_PASS", "")
+	metricsFile := getenv("CUSTOM_METRICS_FILE", "/etc/custom-metrics.txt")
 
 	interval := getenvDuration("INTERVAL", 15*time.Second)
 	scrapeTimeout := getenvDuration("SCRAPE_TIMEOUT", 5*time.Second)
 	pushTimeout := getenvDuration("PUSH_TIMEOUT", 5*time.Second)
-	customName := getenv("CUSTOM_METRIC_NAME", "")
-	customValue := getenvFloat("CUSTOM_METRIC_VALUE", 0)
+	healthAddr := getenv("HEALTH_ADDR", ":8081")
 
 	client := &http.Client{}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Health endpoint
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("ok"))
+		})
+		srv := &http.Server{Addr: healthAddr, Handler: mux}
+
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			srv.Shutdown(shutdownCtx)
+		}()
+
+		fmt.Println("health endpoint listening on", healthAddr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Println("health server error:", err)
+		}
+	}()
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
-		run(client, sourceURL, pushURL, pushUser, pushPass, scrapeTimeout, pushTimeout, customName, customValue)
-		<-ticker.C
+		select {
+		case <-ctx.Done():
+			fmt.Println("shutdown requested, exiting gracefully...")
+			return
+		default:
+			customMetrics, err := readMetricsFile(metricsFile)
+			if err != nil {
+				fmt.Println("read metrics file:", err)
+			}
+			run(client, sourceURL, pushURL, pushUser, pushPass, scrapeTimeout, pushTimeout, customMetrics)
+			select {
+			case <-ticker.C:
+				continue
+			case <-ctx.Done():
+				fmt.Println("shutdown during wait, exiting gracefully...")
+				return
+			}
+		}
 	}
 }
 
-func run(client *http.Client, source, push, user, pass string, scrapeTimeout, pushTimeout time.Duration, customName string, customValue float64) {
+func run(client *http.Client, source, push, user, pass string, scrapeTimeout, pushTimeout time.Duration, customMetrics []byte) {
 	ctx, cancel := context.WithTimeout(context.Background(), scrapeTimeout)
 	defer cancel()
 
@@ -81,8 +179,10 @@ func run(client *http.Client, source, push, user, pass string, scrapeTimeout, pu
 		return
 	}
 
-	if customName != "" {
-		body = append(body, []byte(fmt.Sprintf("\n%s %f\n", customName, customValue))...)
+	// Append rendered template metrics
+	if len(customMetrics) > 0 {
+		body = append(body, []byte("\n")...)
+		body = append(body, customMetrics...)
 	}
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), pushTimeout)
@@ -108,10 +208,9 @@ func run(client *http.Client, source, push, user, pass string, scrapeTimeout, pu
 	io.Copy(io.Discard, resp2.Body)
 	resp2.Body.Close()
 
-	fmt.Printf("[%s] pushed → %s (auth=%v custom=%s=%v)\n",
+	fmt.Printf("[%s] pushed → %s (auth=%v, template metrics=%d bytes)\n",
 		time.Now().Format(time.RFC3339),
 		push,
 		user != "",
-		customName,
-		customValue)
+		len(customMetrics))
 }
