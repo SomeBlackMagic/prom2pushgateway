@@ -22,8 +22,7 @@ Supports:
 | `INTERVAL`            | Scrape and push interval in seconds                                                         | `15`                                          |
 | `SCRAPE_TIMEOUT`      | Timeout for scraping operation (seconds)                                                    | `5`                                           |
 | `PUSH_TIMEOUT`        | Timeout for pushing to Pushgateway (seconds)                                                | `5`                                           |
-| `CUSTOM_METRIC_NAME`  | Optional additional metric name to append                                                   | *(empty)*                                     |
-| `CUSTOM_METRIC_VALUE` | Optional additional metric value (float)                                                    | `0`                                           |
+| `CUSTOM_METRICS_FILE` | Optional path to file metric for join data on every push                                    | `/etc/custom-metrics.txt`                     |
 
 ---
 
@@ -51,8 +50,6 @@ services:
       INTERVAL: "10"
       SCRAPE_TIMEOUT: "3"
       PUSH_TIMEOUT: "3"
-      CUSTOM_METRIC_NAME: "my_custom_metric"
-      CUSTOM_METRIC_VALUE: "42.5"
 ```
 
 ---
@@ -82,8 +79,6 @@ docker run --rm \
   -e INTERVAL=10 \
   -e SCRAPE_TIMEOUT=3 \
   -e PUSH_TIMEOUT=3 \
-  -e CUSTOM_METRIC_NAME=my_custom_value \
-  -e CUSTOM_METRIC_VALUE=42.5 \
   scraper:latest
 ```
 

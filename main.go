@@ -23,11 +23,6 @@ var revision string = "000000000000000000000000000000"
 
 var lastSuccess atomic.Value
 
-type customMetric struct {
-	Name  string
-	Value float64
-}
-
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
