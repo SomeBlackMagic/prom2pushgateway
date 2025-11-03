@@ -1,0 +1,104 @@
+---
+name: Build Docker Image
+
+on:
+  schedule:
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - 'master'
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: set up qemu
+        uses: docker/setup-qemu-action@v2
+
+      - name: set up docker buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: docker_build
+        uses: docker/build-push-action@v6.6.0
+        with:
+          #platforms: linux/amd64,linux/arm64
+
+          platforms: linux/amd64
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            COMMIT_HASH=${{ github.sha }}
+
+      - name: Extract file from pushed image
+        if: github.ref_type == 'tag'
+        env:
+          REGISTRY: ghcr.io
+          DIGEST: ${{ steps.docker_build.outputs.digest }}
+        run: |
+          REPO_LC="${GITHUB_REPOSITORY,,}"
+          IMAGE="${REGISTRY}/${REPO_LC}@${DIGEST}"
+          docker pull "$IMAGE"
+          CID=$(docker create "$IMAGE" -c true)
+          docker cp "$CID:/usr/local/bin/prom2pushgateway" ./prom2pushgateway
+          docker rm "$CID"
+          mv prom2pushgateway prom2pushgateway-amd-x64-linux
+          sha256sum prom2pushgateway-amd-x64-linux > prom2pushgateway.sha256
+
+      - name: Check release exists by tag
+        if: github.ref_type == 'tag'
+        id: rel
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const tag = process.env.GITHUB_REF_NAME;
+            const { owner, repo } = context.repo;
+            const { data } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+            core.setOutput('upload_url', data.upload_url)
+
+      - name: Upload asset to existing release
+        if: github.ref_type == 'tag' && steps.rel.outputs.upload_url != ''
+
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.rel.outputs.upload_url }}
+          asset_path: ./prom2pushgateway-amd-x64-linux
+          asset_name: prom2pushgateway-amd-x64-linux
+          asset_content_type: 'application/octet-stream'
