@@ -50,9 +50,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       .
 
 # minimal runtime image
-FROM busybox
+FROM alpine
 
-COPY --from=curlimages/curl:8.7.1 /usr/bin/curl /usr/bin/curl
+RUN apk add curl
 
 # copy CA certificates for HTTPS support
 # (taken from the same alpine version)
@@ -66,5 +66,5 @@ USER 65532:65532
 
 CMD ["/usr/local/bin/prom2pushgateway"]
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=1s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=5s --start-period=2s \
   CMD curl -f http://localhost:8081/healthz || exit 1
