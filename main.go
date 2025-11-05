@@ -175,18 +175,21 @@ func run(client *http.Client, source, push, user, pass string, scrapeTimeout, pu
 	req, err := http.NewRequestWithContext(ctx, "GET", source, nil)
 	if err != nil {
 		fmt.Println("scrape: build request:", err)
+		lastSuccess.Store(false)
 		return
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Println("scrape:", err)
+		lastSuccess.Store(false)
 		return
 	}
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
 		fmt.Println("read:", err)
+		lastSuccess.Store(false)
 		return
 	}
 
@@ -202,6 +205,7 @@ func run(client *http.Client, source, push, user, pass string, scrapeTimeout, pu
 	req2, err := http.NewRequestWithContext(ctx2, "POST", push, bytes.NewReader(body))
 	if err != nil {
 		fmt.Println("push: build request:", err)
+		lastSuccess.Store(false)
 		return
 	}
 	req2.Header.Set("Content-Type", "text/plain")
@@ -214,6 +218,7 @@ func run(client *http.Client, source, push, user, pass string, scrapeTimeout, pu
 	resp2, err := client.Do(req2)
 	if err != nil {
 		fmt.Println("push:", err)
+		lastSuccess.Store(false)
 		return
 	}
 	io.Copy(io.Discard, resp2.Body)
@@ -224,4 +229,7 @@ func run(client *http.Client, source, push, user, pass string, scrapeTimeout, pu
 		push,
 		user != "",
 		len(customMetrics))
+
+	// Update health status on successful push
+	lastSuccess.Store(true)
 }
